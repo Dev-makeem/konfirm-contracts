@@ -254,9 +254,9 @@ impl PaymentContract {
 
     /// Admin-only. Lifts a pause set by `pause`. Callable while paused.
     pub fn unpause(env: Env) -> Result<(), PaymentError> {
-        Self::require_admin(&env)?;
+        let admin = Self::require_admin(&env)?;
         env.storage().instance().set(&DataKey::Paused, &false);
-        env.events().publish((symbol_short!("unpaused"),), ());
+        env.events().publish((symbol_short!("unpaused"), admin), ());
         Ok(())
     }
 
@@ -412,6 +412,28 @@ mod test {
                     client.address.clone(),
                     (symbol_short!("voided"), new_admin).into_val(&env),
                     (id2, 250_0000i128).into_val(&env)
+                )
+            ]
+        );
+    }
+
+    #[test]
+    fn unpaused_event_carries_acting_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin) = setup(&env);
+        let new_admin = Address::generate(&env);
+        client.set_admin(&admin, &new_admin);
+        client.pause();
+        client.unpause();
+        assert_eq!(
+            env.events().all().filter_by_contract(&client.address),
+            soroban_sdk::vec![
+                &env,
+                (
+                    client.address.clone(),
+                    (symbol_short!("unpaused"), new_admin).into_val(&env),
+                    ().into_val(&env)
                 )
             ]
         );
