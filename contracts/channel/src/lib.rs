@@ -411,7 +411,7 @@ impl ChannelContract {
         current_admin.require_auth();
         new_admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &new_admin);
-        env.events().publish((symbol_short!("admin"),), new_admin);
+        env.events().publish((symbol_short!("admin"), current_admin), new_admin);
         Ok(())
     }
 
@@ -985,5 +985,23 @@ mod test {
         assert_eq!(token_client.balance(&payee), deposit);
         assert_eq!(token_client.balance(&payer), 1_000_0000i128 - deposit);
         assert_eq!(token_client.balance(&contract_id), 0i128);
+    }
+
+    #[test]
+    fn set_admin_event_records_outgoing_and_incoming_admin() {
+        use soroban_sdk::{vec, IntoVal, Val};
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        let contract_id = env.register(ChannelContract, ());
+        let client = ChannelContractClient::new(&env, &contract_id);
+        client.initialize(&admin);
+
+        client.set_admin(&admin, &new_admin);
+
+        let topics: soroban_sdk::Vec<Val> = (symbol_short!("admin"), admin.clone()).into_val(&env);
+        let data: Val = new_admin.clone().into_val(&env);
+        assert_eq!(env.events().all(), vec![&env, (contract_id, topics, data)]);
     }
 }

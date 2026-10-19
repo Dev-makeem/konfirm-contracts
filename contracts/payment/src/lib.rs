@@ -239,7 +239,7 @@ impl PaymentContract {
         current_admin.require_auth();
         new_admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &new_admin);
-        env.events().publish((symbol_short!("admin"),), new_admin);
+        env.events().publish((symbol_short!("admin"), current_admin), new_admin);
         Ok(())
     }
 
@@ -376,5 +376,21 @@ mod test {
         let res = client.try_record_payment(&merchant, &payer, &1u64, &100_0000i128, &tx_hash);
         assert!(res.is_err());
         assert_eq!(client.try_get_payment(&1u64), Err(Ok(PaymentError::NotFound)));
+    }
+
+    #[test]
+    fn set_admin_event_records_outgoing_and_incoming_admin() {
+        use soroban_sdk::testutils::Events as _;
+        use soroban_sdk::{vec, IntoVal, Val};
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin) = setup(&env);
+        let new_admin = Address::generate(&env);
+
+        client.set_admin(&admin, &new_admin);
+
+        let topics: soroban_sdk::Vec<Val> = (symbol_short!("admin"), admin.clone()).into_val(&env);
+        let data: Val = new_admin.clone().into_val(&env);
+        assert_eq!(env.events().all(), vec![&env, (client.address.clone(), topics, data)]);
     }
 }
