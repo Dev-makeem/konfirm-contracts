@@ -996,7 +996,7 @@ mod test {
         let new_admin = Address::generate(&env);
         let contract_id = env.register(ChannelContract, ());
         let client = ChannelContractClient::new(&env, &contract_id);
-        client.initialize(&admin);
+        client.initialize(&admin, &86_400u64);
 
         client.set_admin(&admin, &new_admin);
 

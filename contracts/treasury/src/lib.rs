@@ -188,11 +188,11 @@ impl TreasuryContract {
         if settlement.approvals.contains(&signer) {
             return Err(TreasuryError::AlreadyApproved);
         }
-        settlement.approvals.push_back(signer);
+        settlement.approvals.push_back(signer.clone());
         settlement.approved_at.push_back(env.ledger().timestamp());
         env.storage().persistent().set(&DataKey::Settlement(settlement_id), &settlement);
         env.storage().persistent().extend_ttl(&DataKey::Settlement(settlement_id), TTL_THRESHOLD, TTL_EXTEND_TO);
-        env.events().publish((symbol_short!("approved"),), settlement_id);
+        env.events().publish((symbol_short!("approved"), signer), settlement_id);
         Ok(())
     }
 
@@ -452,5 +452,23 @@ mod test {
 
         let settlement = client.get_settlement(&id);
         assert_eq!(settlement.status, SettlementStatus::Pending, "a reverted execute must leave the settlement Pending, not Executed");
+    }
+
+    #[test]
+    fn approve_settlement_event_records_approving_signer() {
+        use soroban_sdk::testutils::Events as _;
+        use soroban_sdk::{IntoVal, Val};
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin, signers, _token) = setup(&env);
+        let merchant = Address::generate(&env);
+
+        let id = client.propose_settlement(&signers.get(0).unwrap(), &merchant, &1_000_0000i128);
+        let approver = signers.get(1).unwrap();
+        client.approve_settlement(&approver, &id);
+
+        let topics: soroban_sdk::Vec<Val> = (symbol_short!("approved"), approver.clone()).into_val(&env);
+        let data: Val = id.into_val(&env);
+        assert_eq!(env.events().all(), vec![&env, (client.address.clone(), topics, data)]);
     }
 }
