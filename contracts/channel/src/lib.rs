@@ -16,6 +16,12 @@ use soroban_sdk::{
 // exists to stop *new* exposure (open_channel, top_up), never to freeze a
 // withdrawal someone can already prove is owed to them.
 
+
+//
+// checkpoint() is the one mutating entry point that is never pausable: pause
+// exists to stop *new* exposure (open_channel, top_up), never to freeze a
+// withdrawal someone can already prove is owed to them.
+
 const DOMAIN_TAG: &[u8; 15] = b"KONFIRM_CHAN_V1";
 const TTL_THRESHOLD: u32 = 100;
 const TTL_EXTEND_TO: u32 = 5_000_000;
