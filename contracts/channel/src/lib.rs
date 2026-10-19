@@ -332,7 +332,7 @@ impl ChannelContract {
         Self::save_channel(&env, channel_id, &ch);
         let open_count = Self::get_open_count(&env, &ch.payer);
         Self::save_open_count(&env, &ch.payer, open_count.saturating_sub(1));
-        env.events().publish((symbol_short!("closed"),), channel_id);
+        env.events().publish((symbol_short!("closed"), ch.payer.clone()), (channel_id, remainder, ch.claimed));
         Ok(())
     }
 
@@ -543,6 +543,17 @@ mod test {
         let token_client = token::TokenClient::new(&env, &token_id);
         assert_eq!(token_client.balance(&payer), 1_000_0000i128);
         assert_eq!(token_client.balance(&contract_id), 0i128);
+        assert_eq!(
+            env.events().all().filter_by_contract(&contract_id),
+            soroban_sdk::vec![
+                &env,
+                (
+                    contract_id.clone(),
+                    (symbol_short!("closed"), payer.clone()).into_val(&env),
+                    (id, 500_0000i128, 0i128).into_val(&env)
+                )
+            ]
+        );
     }
 
     #[test]
