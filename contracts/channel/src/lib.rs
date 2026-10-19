@@ -234,7 +234,7 @@ impl ChannelContract {
         token::TokenClient::new(&env, &ch.token).transfer(&payer, env.current_contract_address(), &amount);
         ch.deposited += amount;
         Self::save_channel(&env, channel_id, &ch);
-        env.events().publish((symbol_short!("topup"),), (channel_id, amount));
+        env.events().publish((symbol_short!("topup"),), (channel_id, amount, ch.deposited));
         Ok(())
     }
 
@@ -440,6 +440,7 @@ mod test {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
     use soroban_sdk::testutils::{Address as _, Events as _, Ledger};
+    use soroban_sdk::IntoVal;
 
     fn setup_token(env: &Env, admin: &Address) -> Address {
         // Stellar Asset Contract test token, provided by soroban-sdk testutils.
@@ -798,6 +799,30 @@ mod test {
 
         let ch = client.get_channel_info(&id);
         assert_eq!(ch.deposited, 700_0000i128);
+        assert_eq!(
+            env.events().all().filter_by_contract(&contract_id),
+            soroban_sdk::vec![
+                &env,
+                (
+                    contract_id.clone(),
+                    (symbol_short!("topup"),).into_val(&env),
+                    (id, 200_0000i128, 700_0000i128).into_val(&env)
+                )
+            ]
+        );
+        client.top_up(&payer, &id, &100_0000i128);
+        assert_eq!(client.get_channel_info(&id).deposited, 800_0000i128);
+        assert_eq!(
+            env.events().all().filter_by_contract(&contract_id),
+            soroban_sdk::vec![
+                &env,
+                (
+                    contract_id.clone(),
+                    (symbol_short!("topup"),).into_val(&env),
+                    (id, 100_0000i128, 800_0000i128).into_val(&env)
+                )
+            ]
+        );
 
         let token_client = token::TokenClient::new(&env, &token_id);
         assert_eq!(token_client.balance(&contract_id), 700_0000i128);
