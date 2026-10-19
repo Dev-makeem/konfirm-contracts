@@ -74,14 +74,14 @@ impl PaymentContract {
     }
 
     // Requires the stored admin's auth; `NotInitialized` before `initialize`.
-    fn require_admin(env: &Env) -> Result<(), PaymentError> {
+    fn require_admin(env: &Env) -> Result<Address, PaymentError> {
         let admin: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
             .ok_or(PaymentError::NotInitialized)?;
         admin.require_auth();
-        Ok(())
+        Ok(admin)
     }
 
     // Fails with `Paused` while the contract is paused.
@@ -151,7 +151,7 @@ impl PaymentContract {
     /// paused.
     pub fn mark_refunded(env: Env, payment_id: u64) -> Result<(), PaymentError> {
         env.storage().instance().extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
-        Self::require_admin(&env)?;
+        let admin = Self::require_admin(&env)?;
         Self::require_not_paused(&env)?;
         let mut record: PaymentRecord = env
             .storage()
@@ -167,7 +167,7 @@ impl PaymentContract {
         record.refunded = true;
         env.storage().persistent().set(&DataKey::Payment(payment_id), &record);
         env.storage().persistent().extend_ttl(&DataKey::Payment(payment_id), TTL_THRESHOLD, TTL_EXTEND_TO);
-        env.events().publish((symbol_short!("refunded"),), payment_id);
+        env.events().publish((symbol_short!("refunded"), admin), (payment_id, record.amount));
         Ok(())
     }
 
@@ -177,7 +177,7 @@ impl PaymentContract {
     /// `is_voided` before trusting it. Fails with `NotFound`, `AlreadyVoided`,
     /// `AlreadyRefunded`, or `Paused` while paused.
     pub fn void_payment(env: Env, payment_id: u64) -> Result<(), PaymentError> {
-        Self::require_admin(&env)?;
+        let admin = Self::require_admin(&env)?;
         Self::require_not_paused(&env)?;
         let record: PaymentRecord = env
             .storage()
@@ -191,7 +191,7 @@ impl PaymentContract {
             return Err(PaymentError::AlreadyRefunded);
         }
         env.storage().persistent().set(&DataKey::Voided(payment_id), &true);
-        env.events().publish((symbol_short!("voided"),), payment_id);
+        env.events().publish((symbol_short!("voided"), admin), (payment_id, record.amount));
         Ok(())
     }
 
@@ -269,7 +269,7 @@ impl PaymentContract {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
+    use soroban_sdk::testutils::{Address as _, Events as _, MockAuth, MockAuthInvoke};
     use soroban_sdk::IntoVal;
 
     fn setup(env: &Env) -> (PaymentContractClient<'_>, Address) {
@@ -376,5 +376,44 @@ mod test {
         let res = client.try_record_payment(&merchant, &payer, &1u64, &100_0000i128, &tx_hash);
         assert!(res.is_err());
         assert_eq!(client.try_get_payment(&1u64), Err(Ok(PaymentError::NotFound)));
+    }
+
+    #[test]
+    fn refunded_and_voided_events_carry_admin_and_amount() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin) = setup(&env);
+        let new_admin = Address::generate(&env);
+        client.set_admin(&admin, &new_admin);
+        let merchant = Address::generate(&env);
+        let payer = Address::generate(&env);
+        let tx_hash = BytesN::from_array(&env, &[7u8; 32]);
+        let id1 = client.record_payment(&merchant, &payer, &1u64, &100_0000i128, &tx_hash);
+        let id2 = client.record_payment(&merchant, &payer, &2u64, &250_0000i128, &tx_hash);
+
+        client.mark_refunded(&id1);
+        assert_eq!(
+            env.events().all().filter_by_contract(&client.address),
+            soroban_sdk::vec![
+                &env,
+                (
+                    client.address.clone(),
+                    (symbol_short!("refunded"), new_admin.clone()).into_val(&env),
+                    (id1, 100_0000i128).into_val(&env)
+                )
+            ]
+        );
+        client.void_payment(&id2);
+        assert_eq!(
+            env.events().all().filter_by_contract(&client.address),
+            soroban_sdk::vec![
+                &env,
+                (
+                    client.address.clone(),
+                    (symbol_short!("voided"), new_admin).into_val(&env),
+                    (id2, 250_0000i128).into_val(&env)
+                )
+            ]
+        );
     }
 }
