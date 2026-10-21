@@ -138,6 +138,7 @@ impl ComplianceContract {
     /// (treasury's 2-of-3 model) or a multisig deployer account is what closes
     /// that gap; see docs/KEYS.md.
     pub fn set_admin(env: Env, current_admin: Address, new_admin: Address) -> Result<(), ComplianceError> {
+        env.storage().instance().extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
         let admin: Address = env
             .storage()
             .instance()
@@ -211,15 +212,7 @@ mod test {
         client.allow_address(&addr);
         assert!(client.is_allowed(&addr));
         client.clear_address(&addr);
-        assert!(client.is_allowed(&addr));
-    }
-
-    #[test]
-    fn is_allowed_works_while_paused() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, _admin) = setup(&env);
-        let addr = Address::generate(&env);
+        assert!(client.is_allowed(&ad
 
         client.block_address(&addr);
         client.pause();
