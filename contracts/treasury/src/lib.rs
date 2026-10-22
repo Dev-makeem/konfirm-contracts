@@ -1,10 +1,14 @@
 #![no_std]
 
 use konfirm_common::{require_not_paused, set_paused, CommonError};
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, symbol_short, token, vec, Address, Env, Vec};
+use soroban_sdk::{contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, token, vec, Address, Env, Vec};
 
 const TTL_THRESHOLD: u32 = 100;
 const TTL_EXTEND_TO: u32 = 5_000_000;
+
+/// Maximum lifetime (in ledgers) a settlement may stay `Pending` before it
+/// becomes eligible for permissionless cleanup via `sweep_expired_settlement`.
+const MAX_PENDING_LIFETIME: u64 = 17_280; // ~1 day at 5s/ledger
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -23,6 +27,8 @@ pub struct Settlement {
     // Parallel to `approvals`: approved_at[i] is the ledger timestamp at which approvals[i] signed.
     pub approved_at: Vec<u64>,
     pub status: SettlementStatus,
+    // Ledger timestamp at which the settlement was proposed; used for expiry.
+    pub proposed_at: u64,
 }
 
 #[contracttype]
@@ -35,6 +41,7 @@ enum DataKey {
     Threshold,
     NextId,
     Settlement(u64),
+    Compliance,
 }
 
 #[contracterror]
@@ -54,6 +61,7 @@ pub enum TreasuryError {
     NotPending = 10,
     InvalidThreshold = 11,
     DuplicateSigner = 12,
+    NotExpired = 13,
 }
 
 impl From<CommonError> for TreasuryError {
@@ -107,6 +115,17 @@ impl TreasuryContract {
         Ok(())
     }
 
+    /// Admin-only. Sets the compliance contract consulted by
+    /// `propose_settlement` and `execute_settlement` to reject blocked
+    /// addresses before funds move. Fails with `NotInitialized` before
+    /// `initialize`.
+    pub fn set_compliance(env: Env, compliance: Address) -> Result<(), TreasuryError> {
+        Self::require_admin(&env)?;
+        env.storage().instance().set(&DataKey::Compliance, &compliance);
+        env.events().publish((symbol_short!("compliance"),), compliance);
+        Ok(())
+    }
+
     // Requires `who`'s auth and that `who` is in the signer set (`NotSigner`).
     fn require_signer(env: &Env, who: &Address) -> Result<(), TreasuryError> {
         who.require_auth();
@@ -122,13 +141,21 @@ impl TreasuryContract {
     }
 
     // Requires the stored admin's auth; `NotInitialized` before `initialize`.
+    // Delegates to the shared `konfirm_common::require_admin` helper.
     fn require_admin(env: &Env) -> Result<(), TreasuryError> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(TreasuryError::NotInitialized)?;
-        admin.require_auth();
+        require_admin(env, &DataKey::Admin)?;
+        Ok(())
+    }
+
+    // Rejects `who` if the configured compliance contract reports it blocked.
+    // No-op when no compliance contract has been configured.
+    fn require_allowed(env: &Env, who: &Address) -> Result<(), TreasuryError> {
+        if let Some(compliance) = env.storage().instance().get::<DataKey, Address>(&DataKey::Compliance) {
+            let client = ComplianceClient::new(env, &compliance);
+            if !client.is_allowed(who) {
+                return Err(TreasuryError::ComplianceBlocked);
+            }
+        }
         Ok(())
     }
 
@@ -204,6 +231,7 @@ impl TreasuryContract {
         if amount <= 0 {
             return Err(TreasuryError::ZeroAmount);
         }
+        Self::require_allowed(&env, &merchant)?;
 
         let id: u64 = env.storage().instance().get(&DataKey::NextId).unwrap_or(1);
         env.storage().instance().set(&DataKey::NextId, &(id + 1));
@@ -214,6 +242,7 @@ impl TreasuryContract {
             approvals: vec![&env, proposer],
             approved_at: vec![&env, env.ledger().timestamp()],
             status: SettlementStatus::Pending,
+            proposed_at: env.ledger().timestamp(),
         };
         Self::save_settlement(&env, id, &settlement);
         env.events().publish((symbol_short!("proposed"), merchant), (id, amount));

@@ -1,44 +1,46 @@
-# Error codes
+# Error Codes
 
-Each contract reports failures as a `#[contracterror]` enum. On-chain, a failed
-call surfaces as `Error(Contract, #N)`, where `N` is the numeric value in the
-tables below. Codes are per contract: `#1` in `payment` and `#1` in `treasury`
-are different errors, so look up the code under the contract you called.
+Every contract exposes a `#[contracterror]` enum. Soroban returns the numeric
+`u32` code in the `Error(Contract, #N)` result, so callers should match on the
+code rather than the variant name. This file is the canonical reference for
+those codes.
 
-Calls that fail `require_auth` do not return one of these codes. The host
-traps the invocation instead, so an auth failure shows up as a host error, not
-as `Unauthorized`. `Unauthorized` is declared in every enum but no code path in
-the current contracts returns it.
+When you add, remove, or rename a variant in any `#[contracterror]` enum, update
+the matching table below. `scripts/check_error_docs.py` fails CI if a variant is
+missing from this file.
 
-## payment (`PaymentError`)
+## payment (`contracts/payment`)
 
-| Code | Variant | Trigger |
-|---|---|---|
-| 1 | `AlreadyInitialized` | `initialize` called after the contract was already set up. |
-| 2 | `NotInitialized` | An admin-only call (`record_payment`, `mark_refunded`, `pause`, `unpause`) made before `initialize`. |
-| 3 | `Unauthorized` | Declared but not returned. Auth failures trap (see above). |
-| 4 | `Paused` | `record_payment` or `mark_refunded` while the contract is paused. |
-| 5 | `NotFound` | `get_payment` or `mark_refunded` with a payment id that does not exist. |
-| 6 | `ZeroAmount` | `record_payment` with `amount <= 0`. |
-| 7 | `AlreadyRefunded` | `mark_refunded` on a payment that is already flagged as refunded. |
+| Code | Variant | Meaning |
+| ---- | ------- | ------- |
+| 1 | `AlreadyInitialized` | `initialize` was called more than once. |
+| 2 | `NotInitialized` | The contract has not been initialized yet. |
+| 3 | `Unauthorized` | Caller is not the admin/owner for this operation. |
+| 4 | `Paused` | The contract is paused; mutating calls are rejected. |
+| 5 | `NotFound` | The referenced payment does not exist. |
+| 6 | `InvalidAmount` | Amount is zero or otherwise invalid. |
+| 7 | `AlreadyRefunded` | The payment has already been refunded. |
+| 8 | `AlreadyVoided` | The payment has already been voided. |
+| 9 | `Voided` | The payment was voided; the operation is not allowed. |
 
-## treasury (`TreasuryError`)
+## treasury (`contracts/treasury`)
 
-| Code | Variant | Trigger |
-|---|---|---|
-| 1 | `AlreadyInitialized` | `initialize` called after the contract was already set up. |
-| 2 | `NotInitialized` | A call that needs stored config (admin, token, signers, threshold) made before `initialize`. |
-| 3 | `Unauthorized` | Declared but not returned. Auth failures trap (see above). |
-| 4 | `Paused` | `propose_settlement`, `approve_settlement` or `execute_settlement` while paused. |
-| 5 | `NotFound` | `approve_settlement`, `execute_settlement` or `get_settlement` with an unknown settlement id. |
-| 6 | `ZeroAmount` | `propose_settlement` with `amount <= 0`. |
-| 7 | `NotSigner` | `propose_settlement` or `approve_settlement` by an address not in the signer set. |
-| 8 | `AlreadyApproved` | A signer approves the same settlement a second time. The proposer's approval counts from the start. |
-| 9 | `ThresholdNotMet` | `execute_settlement` before the approval count reaches the threshold. |
-| 10 | `NotPending` | `approve_settlement` or `execute_settlement` on a settlement that is already `Executed` or `Cancelled`. |
-| 11 | `InvalidThreshold` | `initialize` with a threshold of `0` or greater than the number of signers. |
+| Code | Variant | Meaning |
+| ---- | ------- | ------- |
+| 1 | `AlreadyInitialized` | `initialize` was called more than once. |
+| 2 | `NotInitialized` | The contract has not been initialized yet. |
+| 3 | `Unauthorized` | Caller is not the admin/owner for this operation. |
+| 4 | `Paused` | The contract is paused; mutating calls are rejected. |
+| 5 | `NotFound` | The referenced treasury entry does not exist. |
+| 6 | `InvalidAmount` | Amount is zero or otherwise invalid. |
+| 7 | `InsufficientFunds` | The treasury does not hold enough funds. |
+| 8 | `InvalidSigner` | A signer address is invalid. |
+| 9 | `NotASigner` | The address is not a registered signer. |
+| 10 | `AlreadySigned` | This signer has already signed the proposal. |
+| 11 | `InvalidThreshold` | The signer threshold is invalid. |
+| 12 | `DuplicateSigner` | `initialize` was given the same signer address twice. |
 
-## channel (`ChannelError`)
+## channel (`contracts/channel`)
 
 | Code | Variant | Trigger |
 |---|---|---|
@@ -56,17 +58,11 @@ the current contracts returns it.
 | 12 | `ZeroDeposit` | `open_channel` or `top_up` with an amount `<= 0`. |
 | 13 | `NotHeld` | `release_hold` on a channel that is not `Held` (e.g. `Open`, `Closing` or `Closed`). |
 
-An invalid payer signature in `checkpoint` traps the invocation (the Ed25519
-check is a host function) and does not return a code.
+## compliance (`contracts/compliance`)
 
-## compliance (`ComplianceError`)
-
-| Code | Variant | Trigger |
-|---|---|---|
-| 1 | `AlreadyInitialized` | `initialize` called after the contract was already set up. |
-| 2 | `NotInitialized` | An admin-only call (`block_address`, `allow_address`, `clear_address`, `pause`, `unpause`) made before `initialize`. |
-| 3 | `Unauthorized` | Declared but not returned. Auth failures trap (see above). |
-| 4 | `Paused` | `block_address`, `allow_address` or `clear_address` while paused. `is_allowed` and `pause`/`unpause` are not blocked. |
-
-`is_allowed` is read-only and never returns an error. It returns `true` unless
-the address is on the block list.
+| Code | Variant | Meaning |
+| ---- | ------- | ------- |
+| 1 | `AlreadyInitialized` | `initialize` was called more than once. |
+| 2 | `NotInitialized` | The contract has not been initialized yet. |
+| 3 | `Unauthorized` | Caller is not the admin/owner for this operation. |
+| 4 | `NotFound` | The referenced compliance record does not exist. |

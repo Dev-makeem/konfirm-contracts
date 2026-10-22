@@ -1,0 +1,49 @@
+name: Bug report
+about: Report a problem or unexpected behavior
+labels: bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please fill in as much detail as you can.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: A clear and concise description of the problem.
+    validations:
+      required: false
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Logs, screenshots, file paths, or commands that show the problem.
+    validations:
+      required: false
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: How can a maintainer reproduce the issue?
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: false
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed approach
+      description: Optional. If you have an idea for a fix, describe it here.
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What would need to be true for this to be considered fixed?
+      placeholder: |
+        - [ ] ...
+    validations:
+      required: false

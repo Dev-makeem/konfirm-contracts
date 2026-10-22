@@ -11,7 +11,7 @@ doctest = false
 
 [dependencies]
 konfirm-common = { path = "../common" }
-soroban-sdk = "27.0.5"
+soroban-sdk = "=27.0.5"
 
 [dev-dependencies]
 # Already present transitively (soroban-sdk's own testutils::sign module
@@ -22,6 +22,9 @@ soroban-sdk = "27.0.5"
 # checks against; claim_payload builds a raw Bytes buffer, no ScVal
 # involved, so the test must sign those exact raw bytes to match).
 ed25519-dalek = "2.2.0"
+# Property-based testing for channel numeric invariants (checkpoint
+# monotonicity, conservation of funds). See issue #59.
+proptest = "1.5.0"
 
 [features]
 testutils = ["soroban-sdk/testutils"]
