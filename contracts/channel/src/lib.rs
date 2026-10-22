@@ -16,6 +16,12 @@ use soroban_sdk::{
 // exists to stop *new* exposure (open_channel, top_up), never to freeze a
 // withdrawal someone can already prove is owed to them.
 
+
+//
+// checkpoint() is the one mutating entry point that is never pausable: pause
+// exists to stop *new* exposure (open_channel, top_up), never to freeze a
+// withdrawal someone can already prove is owed to them.
+
 const DOMAIN_TAG: &[u8; 15] = b"KONFIRM_CHAN_V1";
 const TTL_THRESHOLD: u32 = 100;
 const TTL_EXTEND_TO: u32 = 5_000_000;
@@ -80,6 +86,7 @@ pub enum ChannelError {
     ZeroDeposit = 12,
     TokenNotAllowed = 13,
     TooManyOpenChannels = 14,
+    InvalidChallengePeriod = 15,
 }
 
 impl From<CommonError> for ChannelError {
@@ -99,6 +106,13 @@ impl ChannelContract {
     pub fn initialize(env: Env, admin: Address, challenge_period_secs: u64) -> Result<(), ChannelError> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(ChannelError::AlreadyInitialized);
+        }
+        // A zero period makes finalize_close succeed in the same ledger as
+        // initiate_close: `timestamp() < closing_at + 0` is false the moment
+        // closing_at is set. The period is frozen for the life of the instance,
+        // so a bad deploy has no recovery path. Reject it before any write.
+        if challenge_period_secs == 0 {
+            return Err(ChannelError::InvalidChallengePeriod);
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -234,7 +248,7 @@ impl ChannelContract {
         token::TokenClient::new(&env, &ch.token).transfer(&payer, env.current_contract_address(), &amount);
         ch.deposited += amount;
         Self::save_channel(&env, channel_id, &ch);
-        env.events().publish((symbol_short!("topup"),), (channel_id, amount));
+        env.events().publish((symbol_short!("topup"),), (channel_id, amount, ch.deposited));
         Ok(())
     }
 
@@ -332,7 +346,7 @@ impl ChannelContract {
         Self::save_channel(&env, channel_id, &ch);
         let open_count = Self::get_open_count(&env, &ch.payer);
         Self::save_open_count(&env, &ch.payer, open_count.saturating_sub(1));
-        env.events().publish((symbol_short!("closed"),), channel_id);
+        env.events().publish((symbol_short!("closed"), ch.payer.clone()), (channel_id, remainder, ch.claimed));
         Ok(())
     }
 
@@ -440,6 +454,7 @@ mod test {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
     use soroban_sdk::testutils::{Address as _, Events as _, Ledger};
+    use soroban_sdk::IntoVal;
 
     fn setup_token(env: &Env, admin: &Address) -> Address {
         // Stellar Asset Contract test token, provided by soroban-sdk testutils.
@@ -542,6 +557,17 @@ mod test {
         let token_client = token::TokenClient::new(&env, &token_id);
         assert_eq!(token_client.balance(&payer), 1_000_0000i128);
         assert_eq!(token_client.balance(&contract_id), 0i128);
+        assert_eq!(
+            env.events().all().filter_by_contract(&contract_id),
+            soroban_sdk::vec![
+                &env,
+                (
+                    contract_id.clone(),
+                    (symbol_short!("closed"), payer.clone()).into_val(&env),
+                    (id, 500_0000i128, 0i128).into_val(&env)
+                )
+            ]
+        );
     }
 
     #[test]
@@ -578,6 +604,56 @@ mod test {
         let token_client = token::TokenClient::new(&env, &token_id);
         assert_eq!(token_client.balance(&payer), 1_000_0000i128);
         assert_eq!(token_client.balance(&contract_id), 0i128);
+    }
+
+    #[test]
+    fn initialize_rejects_zero_challenge_period() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+
+        let contract_id = env.register(ChannelContract, ());
+        let client = ChannelContractClient::new(&env, &contract_id);
+
+        let res = client.try_initialize(&admin, &0u64);
+        assert_eq!(res, Err(Ok(ChannelError::InvalidChallengePeriod)));
+
+        // The rejection happens before any write, so the contract is still
+        // uninitialized and a later call with a valid period succeeds.
+        client.initialize(&admin, &3_600u64);
+    }
+
+    #[test]
+    fn finalize_close_cannot_succeed_in_the_same_ledger_as_initiate_close() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token_id = setup_token(&env, &token_admin);
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_id);
+
+        let payer = Address::generate(&env);
+        let payee = Address::generate(&env);
+        token_admin_client.mint(&payer, &1_000_0000i128);
+
+        let contract_id = env.register(ChannelContract, ());
+        let client = ChannelContractClient::new(&env, &contract_id);
+
+        // 1 is the shortest period the contract accepts after this change.
+        client.initialize(&admin, &1u64);
+        client.set_token_allowed(&token_id, &true);
+        let payer_pubkey = BytesN::from_array(&env, &[9u8; 32]);
+        let id = client.open_channel(&payer, &payee, &token_id, &payer_pubkey, &500_0000i128, &None);
+
+        client.initiate_close(&payer, &id);
+
+        // No time advance at all. Under a zero period this call would succeed
+        // and refund the full deposit in the same ledger.
+        let res = client.try_finalize_close(&id);
+        assert_eq!(res, Err(Ok(ChannelError::ChallengeNotElapsed)));
+
+        let token_client = token::TokenClient::new(&env, &token_id);
+        assert_eq!(token_client.balance(&contract_id), 500_0000i128);
     }
 
     #[test]
@@ -798,6 +874,30 @@ mod test {
 
         let ch = client.get_channel_info(&id);
         assert_eq!(ch.deposited, 700_0000i128);
+        assert_eq!(
+            env.events().all().filter_by_contract(&contract_id),
+            soroban_sdk::vec![
+                &env,
+                (
+                    contract_id.clone(),
+                    (symbol_short!("topup"),).into_val(&env),
+                    (id, 200_0000i128, 700_0000i128).into_val(&env)
+                )
+            ]
+        );
+        client.top_up(&payer, &id, &100_0000i128);
+        assert_eq!(client.get_channel_info(&id).deposited, 800_0000i128);
+        assert_eq!(
+            env.events().all().filter_by_contract(&contract_id),
+            soroban_sdk::vec![
+                &env,
+                (
+                    contract_id.clone(),
+                    (symbol_short!("topup"),).into_val(&env),
+                    (id, 100_0000i128, 800_0000i128).into_val(&env)
+                )
+            ]
+        );
 
         let token_client = token::TokenClient::new(&env, &token_id);
         assert_eq!(token_client.balance(&contract_id), 700_0000i128);
