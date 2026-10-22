@@ -131,14 +131,14 @@ impl PaymentContract {
     }
 
     // Requires the stored admin's auth; `NotInitialized` before `initialize`.
-    fn require_admin(env: &Env) -> Result<(), PaymentError> {
+    fn require_admin(env: &Env) -> Result<Address, PaymentError> {
         let admin: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
             .ok_or(PaymentError::NotInitialized)?;
         admin.require_auth();
-        Ok(())
+        Ok(admin)
     }
 
     // Fails with `Paused` while the contract is paused.
@@ -236,7 +236,7 @@ impl PaymentContract {
     /// `PaymentRecord`.
     pub fn mark_refunded(env: Env, payment_id: u64) -> Result<(), PaymentError> {
         env.storage().instance().extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
-        Self::require_admin(&env)?;
+        let admin = Self::require_admin(&env)?;
         Self::require_not_paused(&env)?;
         if !env.storage().persistent().has(&DataKey::Payment(payment_id)) {
             return Err(PaymentError::NotFound);
@@ -247,9 +247,10 @@ impl PaymentContract {
         if Self::is_voided_flag(&env, payment_id) {
             return Err(PaymentError::Voided);
         }
-        env.storage().persistent().set(&DataKey::Refunded(payment_id), &true);
-        env.storage().persistent().extend_ttl(&DataKey::Refunded(payment_id), TTL_THRESHOLD, TTL_EXTEND_TO);
-        env.events().publish((symbol_short!("refunded"),), payment_id);
+        record.refunded = true;
+        env.storage().persistent().set(&DataKey::Payment(payment_id), &record);
+        env.storage().persistent().extend_ttl(&DataKey::Payment(payment_id), TTL_THRESHOLD, TTL_EXTEND_TO);
+        env.events().publish((symbol_short!("refunded"), admin), (payment_id, record.amount));
         Ok(())
     }
 
@@ -259,7 +260,7 @@ impl PaymentContract {
     /// `is_voided` before trusting it. Fails with `NotFound`, `AlreadyVoided`,
     /// `AlreadyRefunded`, or `Paused` while paused.
     pub fn void_payment(env: Env, payment_id: u64) -> Result<(), PaymentError> {
-        Self::require_admin(&env)?;
+        let admin = Self::require_admin(&env)?;
         Self::require_not_paused(&env)?;
         if !env.storage().persistent().has(&DataKey::Payment(payment_id)) {
             return Err(PaymentError::NotFound);
@@ -271,7 +272,7 @@ impl PaymentContract {
             return Err(PaymentError::AlreadyRefunded);
         }
         env.storage().persistent().set(&DataKey::Voided(payment_id), &true);
-        PaymentVoidedEvent { payment_id }.publish(&env);
+        env.events().publish((symbol_short!("voided"), admin), (payment_id, record.amount));
         Ok(())
     }
 
@@ -285,7 +286,224 @@ impl PaymentContract {
         env.storage().persistent().get(&DataKey::Refunded(payment_id)).unwrap_or(false)
     }
 
-    /// Permissionless. Read-only and not pause-gated. Returns whether the
-    /// payment was voided, or
+    /// Rotates the admin key. Requires auth from both the current admin and
+    /// the incoming one, so a handoff can't strand the contract on an address
+    /// nobody holds. Deliberately not pause-gated: rotating away from a
+    /// suspected key must still work during an incident.
+    ///
+    /// This does NOT defend against a leaked current key on its own — that key
+    /// can still rotate to an attacker-held address. Quorum-based control
+    /// (treasury's 2-of-3 model) or a multisig deployer account is what closes
+    /// that gap; see docs/KEYS.md.
+    pub fn set_admin(env: Env, current_admin: Address, new_admin: Address) -> Result<(), PaymentError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(PaymentError::NotInitialized)?;
+        if current_admin != admin {
+            return Err(PaymentError::Unauthorized);
+        }
+        current_admin.require_auth();
+        new_admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.events().publish((symbol_short!("admin"),), new_admin);
+        Ok(())
+    }
 
-/* … truncated 6926 chars — edit only what you need near the top … */
+    /// Admin-only. Blocks `record_payment`, `mark_refunded` and `void_payment`
+    /// until unpaused. Reads and `set_admin` keep working while paused.
+    pub fn pause(env: Env) -> Result<(), PaymentError> {
+        env.storage().instance().extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+        Self::require_admin(&env)?;
+        env.storage().instance().set(&DataKey::Paused, &true);
+        Ok(())
+    }
+
+    /// Admin-only. Lifts a pause set by `pause`. Callable while paused.
+    pub fn unpause(env: Env) -> Result<(), PaymentError> {
+        let admin = Self::require_admin(&env)?;
+        env.storage().instance().set(&DataKey::Paused, &false);
+        env.events().publish((symbol_short!("unpaused"), admin), ());
+        Ok(())
+    }
+
+    /// Permissionless. Read-only. Returns whether the contract is paused.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use soroban_sdk::testutils::{Address as _, Events as _, MockAuth, MockAuthInvoke};
+    use soroban_sdk::IntoVal;
+
+    fn setup(env: &Env) -> (PaymentContractClient<'_>, Address) {
+        let admin = Address::generate(env);
+        let contract_id = env.register(PaymentContract, ());
+        let client = PaymentContractClient::new(env, &contract_id);
+        client.initialize(&admin);
+        (client, admin)
+    }
+
+    #[test]
+    fn record_and_fetch_payment() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin) = setup(&env);
+        let merchant = Address::generate(&env);
+        let payer = Address::generate(&env);
+        let tx_hash = BytesN::from_array(&env, &[7u8; 32]);
+
+        let id = client.record_payment(&merchant, &payer, &42u64, &1_000_0000i128, &tx_hash);
+        let rec = client.get_payment(&id);
+        assert_eq!(rec.merchant, merchant);
+        assert_eq!(rec.link_id, 42u64);
+        assert_eq!(rec.amount, 1_000_0000i128);
+        assert!(!rec.refunded);
+    }
+
+    #[test]
+    fn zero_amount_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin) = setup(&env);
+        let merchant = Address::generate(&env);
+        let payer = Address::generate(&env);
+        let tx_hash = BytesN::from_array(&env, &[0u8; 32]);
+
+        let res = client.try_record_payment(&merchant, &payer, &1u64, &0i128, &tx_hash);
+        assert_eq!(res, Err(Ok(PaymentError::InvalidAmount)));
+    }
+
+    #[test]
+    fn double_refund_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin) = setup(&env);
+        let merchant = Address::generate(&env);
+        let payer = Address::generate(&env);
+        let tx_hash = BytesN::from_array(&env, &[1u8; 32]);
+
+        let id = client.record_payment(&merchant, &payer, &1u64, &500_0000i128, &tx_hash);
+        client.mark_refunded(&id);
+        let res = client.try_mark_refunded(&id);
+        assert_eq!(res, Err(Ok(PaymentError::AlreadyRefunded)));
+    }
+
+    #[test]
+    fn unknown_payment_not_found() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin) = setup(&env);
+        let res = client.try_get_payment(&999u64);
+        assert_eq!(res, Err(Ok(PaymentError::NotFound)));
+    }
+
+    #[test]
+    fn paused_blocks_recording() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin) = setup(&env);
+        let merchant = Address::generate(&env);
+        let payer = Address::generate(&env);
+        let tx_hash = BytesN::from_array(&env, &[2u8; 32]);
+
+        let id = client.record_payment(&merchant, &payer, &1u64, &100_0000i128, &tx_hash);
+        client.pause();
+        let res = client.try_record_payment(&merchant, &payer, &2u64, &100_0000i128, &tx_hash);
+        assert_eq!(res, Err(Ok(PaymentError::Paused)));
+        let res = client.try_mark_refunded(&id);
+        assert_eq!(res, Err(Ok(PaymentError::Paused)));
+    }
+
+    #[test]
+    fn non_admin_signer_cannot_call_admin_function() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin) = setup(&env);
+        let non_admin = Address::generate(&env);
+        let merchant = Address::generate(&env);
+        let payer = Address::generate(&env);
+        let tx_hash = BytesN::from_array(&env, &[3u8; 32]);
+
+        // Only a non-admin address authorizes the call; the admin's
+        // require_auth() must therefore fail.
+        env.mock_auths(&[MockAuth {
+            address: &non_admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "record_payment",
+                args: (merchant.clone(), payer.clone(), 1u64, 100_0000i128, tx_hash.clone())
+                    .into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        let res = client.try_record_payment(&merchant, &payer, &1u64, &100_0000i128, &tx_hash);
+        assert!(res.is_err());
+        assert_eq!(client.try_get_payment(&1u64), Err(Ok(PaymentError::NotFound)));
+    }
+
+    #[test]
+    fn refunded_and_voided_events_carry_admin_and_amount() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin) = setup(&env);
+        let new_admin = Address::generate(&env);
+        client.set_admin(&admin, &new_admin);
+        let merchant = Address::generate(&env);
+        let payer = Address::generate(&env);
+        let tx_hash = BytesN::from_array(&env, &[7u8; 32]);
+        let id1 = client.record_payment(&merchant, &payer, &1u64, &100_0000i128, &tx_hash);
+        let id2 = client.record_payment(&merchant, &payer, &2u64, &250_0000i128, &tx_hash);
+
+        client.mark_refunded(&id1);
+        assert_eq!(
+            env.events().all().filter_by_contract(&client.address),
+            soroban_sdk::vec![
+                &env,
+                (
+                    client.address.clone(),
+                    (symbol_short!("refunded"), new_admin.clone()).into_val(&env),
+                    (id1, 100_0000i128).into_val(&env)
+                )
+            ]
+        );
+        client.void_payment(&id2);
+        assert_eq!(
+            env.events().all().filter_by_contract(&client.address),
+            soroban_sdk::vec![
+                &env,
+                (
+                    client.address.clone(),
+                    (symbol_short!("voided"), new_admin).into_val(&env),
+                    (id2, 250_0000i128).into_val(&env)
+                )
+            ]
+        );
+    }
+
+    #[test]
+    fn unpaused_event_carries_acting_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin) = setup(&env);
+        let new_admin = Address::generate(&env);
+        client.set_admin(&admin, &new_admin);
+        client.pause();
+        client.unpause();
+        assert_eq!(
+            env.events().all().filter_by_contract(&client.address),
+            soroban_sdk::vec![
+                &env,
+                (
+                    client.address.clone(),
+                    (symbol_short!("unpaused"), new_admin).into_val(&env),
+                    ().into_val(&env)
+                )
+            ]
+        );
+    }
+}
