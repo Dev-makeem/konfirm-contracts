@@ -1,17 +1,17 @@
 [package]
 name = "konfirm-payment"
-edition.workspace = true
-license.workspace = true
 version = "0.1.0"
-publish = false
+edition = "2021"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
-doctest = false
 
 [dependencies]
+soroban-sdk = "=27.0.5"
 konfirm-common = { path = "../common" }
-soroban-sdk = "27.0.5"
+
+[dev-dependencies]
+soroban-sdk = { version = "=27.0.5", features = ["testutils"] }
 
 [features]
 testutils = ["soroban-sdk/testutils"]

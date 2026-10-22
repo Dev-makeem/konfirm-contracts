@@ -1,0 +1,18 @@
+# CODEOWNERS for Konfirm-xyz/konfirm-contracts
+#
+# These rules designate mandatory reviewers for pull requests.
+# Enforcement requires branch protection on `main` with
+# "Require review from Code Owners" enabled (manual GitHub setting).
+#
+# Syntax: <pattern> <owner> [<owner> ...]
+# Owners must be real, current handles under the Konfirm-xyz org.
+
+# Default owner for everything in the repo.
+* @Konfirm-xyz/maintainers
+
+# Fund-custody contracts: treasury and channel moves real funds.
+/contracts/treasury/ @Konfirm-xyz/maintainers
+/contracts/channel/ @Konfirm-xyz/maintainers
+
+# CI and repo configuration changes also require maintainer sign-off.
+/.github/ @Konfirm-xyz/maintainers

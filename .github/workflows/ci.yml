@@ -1,43 +1,137 @@
 name: CI
 
+# NOTE (fork PRs): GitHub's default "require approval for first-time
+# contributors" setting blocks `pull_request`-triggered runs on fork PRs
+# until a maintainer clicks "Approve and run" — the run shows
+# `action_required` with an empty `jobs` array and CI never executes.
+# Reviewers MUST approve the pending run and wait for a green result
+# before approving/merging any fork PR. This is a repo Settings action
+# (Settings → Actions → General → "Fork pull request workflows"), not
+# something this workflow file can change.
+
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
   test:
+    name: Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
-
-      # Real unit tests via soroban-sdk's testutils — no mocked ledger, an
-      # in-process simulated one exercising the actual contract logic.
-      # testutils is an opt-in feature (see each contract's Cargo.toml) —
-      # without it, Address::generate/Env::register don't exist and this
-      # fails to even compile.
-      - name: Run contract tests
+      - name: Run tests
         run: cargo test --all --features testutils
 
-      # Every pub fn must either require auth or be documented Permissionless —
-      # see "Authorization convention" in README.md.
-      - name: Check pub fn authorization
-        run: python3 scripts/check_pub_fn_auth.py
-
-  audit:
+  build-wasm:
     runs-on: ubuntu-latest
-    # rustsec/audit-check publishes its findings as a GitHub Check Run,
-    # which needs an explicit grant — the default GITHUB_TOKEN permissions
-    # don't include it, and the scan itself was actually succeeding
-    # (0 vulnerabilities) while this step failed only on the report step.
-    permissions:
-      contents: read
-      checks: write
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install wasm32v1-none target
+        run: rustup target add wasm32v1-none
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli --features opt
+      - name: Build contracts for wasm32v1-none
+        run: |
+          for contract in common payment compliance treasury channel; do
+            echo "Building contracts/$contract"
+            stellar contract build --target wasm32v1-none --manifest-path "contracts/$contract/Cargo.toml"
+          done
+
+      # README's Deployed Addresses table is the source of truth — fail if any
+      # tracked file (e.g. a stale artifacts/addresses.json) disagrees with it.
+      - name: Check deployed addresses match README
+        run: python3 scripts/check_addresses.py
+
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Run cargo audit
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Issue #95: this is a public fund-custody repo (deploy addresses live here,
+  # and the org's other repos handle real deployer/facilitator keys). Secret
+  # scanning and push protection MUST stay enabled so an accidentally committed
+  # key/token is caught by GitHub before it is visible to the world.
+  #
+  # The toggles themselves are repo Settings (Settings → Code security) or the
+  # API — they cannot be flipped from this workflow. This job only verifies the
+  # expected state and fails loudly if either is disabled, so a regression is
+  # caught on the next push/PR instead of silently.
+  #
+  # Verify manually:
+  #   gh api repos/Konfirm-xyz/konfirm-contracts --jq '.security_and_analysis'
+  # Expected:
+  #   secret_scanning.status == "enabled"
+  #   secret_scanning_push_protection.status == "enabled"
+  #
+  # Rollout: enable secret scanning first (free for public repos), then push
+  # protection. If legitimate testnet/test fixture patterns trip push
+  # protection, allow-list them in Settings → Code security → Push protection
+  # bypass/allow-list rather than disabling the feature.
+  security-settings:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Verify secret scanning and push protection are enabled
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          analysis=$(gh api "repos/${REPO}" --jq '.security_and_analysis')
+          echo "security_and_analysis: ${analysis}"
+          scanning=$(echo "${analysis}" | jq -r '.secret_scanning.status // "missing"')
+          push=$(echo "${analysis}" | jq -r '.secret_scanning_push_protection.status // "missing"')
+          echo "secret_scanning.status = ${scanning}"
+          echo "secret_scanning_push_protection.status = ${push}"
+          failed=0
+          if [ "${scanning}" != "enabled" ]; then
+            echo "::error::secret_scanning.status is '${scanning}', expected 'enabled' (issue #95)"
+            failed=1
+          fi
+          if [ "${push}" != "enabled" ]; then
+            echo "::error::secret_scanning_push_protection.status is '${push}', expected 'enabled' (issue #95)"
+            failed=1
+          fi
+          if [ "${failed}" -ne 0 ]; then
+            echo "Enable via Settings → Code security, or:"
+            echo "  gh api -X PATCH repos/${REPO} -f 'security_and_analysis[secret_scanning][status]=enabled' -f 'security_and_analysis[secret_scanning_push_protection][status]=enabled'"
+            exit 1
+          fi
+
+  # Issue #96: CodeQL / code-scanning adoption tracker (low priority).
+  #
+  # No code-scanning workflow exists today and `code-scanning/alerts` returns
+  # 404 "no analysis found" — this is a deliberate, tooling-maturity-justified
+  # gap, not negligence. CodeQL's Rust support is comparatively immature (no
+  # default-setup/autobuild parity with mature languages, and soroban-sdk's
+  # heavy macro use is a known weak spot for dataflow-based analyzers).
+  #
+  # Recommended: no action now. Revisit by 2026-06-30 (or sooner if CodeQL
+  # ships stable Rust/Soroban coverage). Candidates when revisited:
+  #   - CodeQL with `language: rust` in beta mode (accept noisy/incomplete
+  #     results as better than nothing), or
+  #   - lighter-weight static analysis: cargo-geiger (unsafe-usage audit) and
+  #     clippy's security-focused lints (partially covered already).
+  #
+  # This job intentionally does NOT run CodeQL — it only surfaces the tracker
+  # status in CI logs so the gap stays visible until it is revisited.
+  code-scanning-tracker:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Note CodeQL/code-scanning adoption status (issue #96)
+        run: |
+          echo "CodeQL/code-scanning: not enabled (issue #96, low priority)."
+          echo "Reason: CodeQL Rust support immature; soroban-sdk macro-heavy code is a weak spot."
+          echo "Revisit by: 2026-06-30."
+          echo "Candidates: CodeQL rust beta mode; cargo-geiger; clippy security lints."

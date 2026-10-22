@@ -1,3 +1,26 @@
-/target
-.soroban
+# Rust / Soroban build artifacts
+target/
+**/target/
+Cargo.lock
+
+# Soroban / Stellar local state
+.soroban/
+*.wasm
+
+# Local-only generated artifacts that can silently rot and disagree with
+# README's Deployed Addresses table (see issue #54). README is the documented
+# source of truth for deployed addresses; do not commit generated address
+# snapshots here.
 artifacts/addresses.json
+artifacts/*.addresses.json
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp

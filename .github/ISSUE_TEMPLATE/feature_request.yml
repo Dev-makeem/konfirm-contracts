@@ -1,0 +1,38 @@
+name: Feature request
+about: Suggest an enhancement or new capability
+labels: enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement. Please describe the idea below.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: A clear and concise description of the feature or enhancement.
+    validations:
+      required: false
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence / motivation
+      description: Why is this needed? Link related issues, PRs, or examples.
+    validations:
+      required: false
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed approach
+      description: Optional. How might this be implemented?
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What would need to be true for this to be considered done?
+      placeholder: |
+        - [ ] ...
+    validations:
+      required: false
