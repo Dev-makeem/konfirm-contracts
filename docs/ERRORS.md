@@ -42,21 +42,21 @@ missing from this file.
 
 ## channel (`contracts/channel`)
 
-| Code | Variant | Meaning |
-| ---- | ------- | ------- |
-| 1 | `AlreadyInitialized` | `initialize` was called more than once. |
-| 2 | `NotInitialized` | The contract has not been initialized yet. |
-| 3 | `Unauthorized` | Caller is not the admin/owner for this operation. |
-| 4 | `Paused` | The contract is paused; mutating calls are rejected. |
-| 5 | `NotFound` | The referenced channel does not exist. |
-| 6 | `InvalidAmount` | Amount is zero or otherwise invalid. |
-| 7 | `ChannelClosed` | The channel is already closed. |
-| 8 | `ChannelNotOpen` | The channel is not open. |
-| 9 | `InsufficientBalance` | The channel does not hold enough balance. |
-| 10 | `InvalidState` | The channel is in an invalid state for this operation. |
-| 11 | `InvalidSignature` | A signature failed verification. |
-| 12 | `ZeroDeposit` | The deposit amount is zero. |
-| 13 | `TokenNotAllowed` | The token is not on the admin allowlist. |
+| Code | Variant | Trigger |
+|---|---|---|
+| 1 | `AlreadyInitialized` | `initialize` called after the contract was already set up. |
+| 2 | `NotInitialized` | A call that needs stored config (admin, challenge period) made before `initialize`. |
+| 3 | `Unauthorized` | `top_up` by someone other than the channel's payer, or `initiate_close` by someone other than the payer or payee. |
+| 4 | `Paused` | `open_channel` or `top_up` while paused. `checkpoint`, `initiate_close` and `finalize_close` are never blocked by pause. |
+| 5 | `NotFound` | Any call with a channel id that does not exist. |
+| 6 | `NotOpen` | `top_up` or `initiate_close` on a channel that is not `Open`; `checkpoint` on a `Closed` channel. |
+| 7 | `StaleClaim` | `checkpoint` with a `nonce` not greater than the stored one, or a `cumulative_amount` not greater than what was already claimed. |
+| 8 | `ExceedsDeposit` | `checkpoint` with a `cumulative_amount` greater than the channel's deposit. |
+| 9 | `ChallengeNotElapsed` | `finalize_close` before `closing_at + challenge period`. |
+| 10 | `NotClosing` | `finalize_close` on a channel that is not `Closing`. |
+| 11 | `Held` | `checkpoint` on a channel that is `Held` by admin. |
+| 12 | `ZeroDeposit` | `open_channel` or `top_up` with an amount `<= 0`. |
+| 13 | `NotHeld` | `release_hold` on a channel that is not `Held` (e.g. `Open`, `Closing` or `Closed`). |
 
 ## compliance (`contracts/compliance`)
 
